@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TikTok OBS Monitor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        dark: '#1a1a1a',
+                        darker: '#121212',
+                        accent: '#00e5ff',
+                        success: '#2ecc71',
+                        danger: '#e74c3c'
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { background-color: #121212; color: #f0f0f0; font-family: 'Segoe UI', sans-serif; }
+        .log-area { font-family: 'Consolas', monospace; }
+    </style>
+</head>
+<body class="h-screen flex flex-col">
+    <div class="p-6 max-w-6xl mx-auto w-full h-full flex flex-col">
+        <header class="mb-8 flex justify-between items-center">
+            <h1 class="text-3xl font-bold text-accent">TikTok OBS Manager</h1>
+            <div id="status-badges" class="flex gap-4">
+                <span id="obs-status" class="px-3 py-1 rounded bg-gray-700 text-sm font-bold">OBS Disconnected</span>
+                <span id="monitor-status" class="px-3 py-1 rounded bg-gray-700 text-sm font-bold">Monitoring Stopped</span>
+            </div>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+            <!-- Config Panel -->
+            <div class="lg:col-span-1 bg-dark p-6 rounded-lg shadow-lg">
+                <h2 class="text-xl font-bold text-accent mb-4">Configuration</h2>
+                <form id="config-form" onsubmit="event.preventDefault(); saveConfig();">
+                    <div class="mb-4">
+                        <label class="block text-gray-400 text-sm font-bold mb-2">TikTok Username</label>
+                        <input type="text" id="username" value="{{ username }}" class="w-full bg-gray-800 border-none rounded p-2 text-white focus:ring-2 focus:ring-accent">
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-gray-400 text-sm font-bold mb-2">OBS Password</label>
+                        <input type="password" id="obs_password" value="{{ obs_password }}" class="w-full bg-gray-800 border-none rounded p-2 text-white focus:ring-2 focus:ring-accent">
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-gray-400 text-sm font-bold mb-2">OBS Source Name</label>
+                        <input type="text" id="source_name" value="{{ source_name }}" class="w-full bg-gray-800 border-none rounded p-2 text-white focus:ring-2 focus:ring-accent">
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-gray-400 text-sm font-bold mb-2">Trigger Keywords</label>
+                        <input type="text" id="keywords" value="{{ keywords }}" class="w-full bg-gray-800 border-none rounded p-2 text-white focus:ring-2 focus:ring-accent">
+                        <p class="text-xs text-gray-500 mt-1">Comma separated (e.g. mine, code)</p>
+                    </div>
+                    
+                    <div class="mb-4 border-t border-gray-700 pt-4">
+                        <h3 class="text-white text-sm font-bold mb-2">Notifications</h3>
+                        <div class="flex items-center mb-2">
+                            <input type="checkbox" id="notifications_enabled" {% if notifications_enabled %}checked{% endif %} class="mr-2 rounded bg-gray-800 border-none text-accent focus:ring-0">
+                            <label for="notifications_enabled" class="text-gray-400 text-sm">Enable Popups</label>
+                        </div>
+                        <div>
+                            <label class="block text-gray-400 text-sm font-bold mb-1">Duration (seconds)</label>
+                            <input type="number" id="notification_duration" value="{{ notification_duration }}" min="1" max="60" class="w-24 bg-gray-800 border-none rounded p-2 text-white focus:ring-2 focus:ring-accent">
+                        </div>
+                    </div>
+
+                    <button type="submit" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded transition">
+                        Save Config
+                    </button>
+                </form>
+                
+                <div class="mt-8 space-y-4">
+                    <button onclick="connectObs()" class="w-full bg-blue-500 hover:bg-blue-400 text-white font-bold py-3 px-4 rounded transition flex items-center justify-center gap-2">
+                        1. Connect OBS
+                    </button>
+                    <button id="toggle-btn" onclick="toggleMonitoring()" class="w-full bg-success hover:opacity-90 text-white font-bold py-3 px-4 rounded transition flex items-center justify-center gap-2">
+                        2. Start Monitor
+                    </button>
+                </div>
+            </div>
+
+            <!-- Logs Panel -->
+            <div class="lg:col-span-2 bg-dark p-6 rounded-lg shadow-lg flex flex-col h-[600px] lg:h-auto">
+                <h2 class="text-xl font-bold text-accent mb-4">Live Logs</h2>
+                <div id="log-container" class="flex-1 bg-gray-900 rounded p-4 overflow-y-auto log-area text-sm">
+                    <!-- Logs will appear here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+        <!-- Toast Notification (Centered) -->
+    <div id="toast-container" class="fixed inset-0 flex items-center justify-center pointer-events-none z-50 opacity-0 transition-opacity duration-300">
+        <div id="toast" class="bg-dark border-l-4 border-accent p-6 rounded shadow-2xl transform scale-90 transition-all duration-300 max-w-md w-full mx-4 pointer-events-auto relative">
+            <!-- Close Button -->
+            <button onclick="closeToast()" class="absolute top-2 right-2 text-gray-400 hover:text-white">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                </svg>
+            </button>
+            
+            <div class="flex items-start">
+                <div class="flex-shrink-0 text-accent text-3xl mr-4">✷</div>
+                <div class="flex-1">
+                    <h3 class="font-bold text-white text-lg">Trigger Alert!</h3>
+                    <p id="toast-msg" class="text-white text-xl font-bold my-2 break-words"></p>
+                    <div class="flex justify-between items-center mt-2">
+                        <p id="toast-user" class="text-sm text-gray-400"></p>
+                        <span class="text-xs text-green-500 font-bold flex items-center">
+                            ✓ Replay Saved
+                        </span>
+                    </div>
+                </div>
+            </div>
+            <!-- Progress Bar -->
+            <div class="mt-4 h-1 w-full bg-gray-700 rounded-full overflow-hidden">
+                 <div id="toast-progress" class="h-full bg-accent w-full origin-left"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let isMonitoring = {{ is_monitoring|yesno:"true,false" }};
+        let obsConnected = {{ obs_connected|yesno:"true,false" }};
+        let notificationDuration = {{ notification_duration }};
+        let toastTimeout;
+
+        function updateUI() {
+            const toggleBtn = document.getElementById('toggle-btn');
+            const obsBadge = document.getElementById('obs-status');
+            const monitorBadge = document.getElementById('monitor-status');
+            const obsBtn = document.querySelector('button[onclick="connectObs()"]');
+
+            if (isMonitoring) {
+                toggleBtn.textContent = "🛑 Stop Monitor";
+                toggleBtn.classList.replace('bg-success', 'bg-danger');
+                monitorBadge.textContent = "Monitoring Active";
+                monitorBadge.classList.replace('bg-gray-700', 'bg-success');
+            } else {
+                toggleBtn.textContent = "2. Start Monitor";
+                toggleBtn.classList.replace('bg-danger', 'bg-success');
+                monitorBadge.textContent = "Monitoring Stopped";
+                monitorBadge.classList.replace('bg-success', 'bg-gray-700');
+            }
+
+            if (obsConnected) {
+                obsBadge.textContent = "OBS Connected";
+                obsBadge.classList.replace('bg-gray-700', 'bg-success');
+                obsBtn.innerHTML = "✓ OBS Connected";
+                obsBtn.classList.replace('bg-blue-500', 'bg-green-600');
+                obsBtn.disabled = true;
+            } else {
+                obsBadge.textContent = "OBS Disconnected";
+                obsBadge.classList.replace('bg-success', 'bg-gray-700');
+                obsBtn.innerHTML = "1. Connect OBS";
+                obsBtn.classList.replace('bg-green-600', 'bg-blue-500');
+                obsBtn.disabled = false;
+            }
+        }
+        
+        updateUI();
+        
+        async function saveConfig() {
+            const data = new FormData();
+            data.append('username', document.getElementById('username').value);
+            data.append('obs_password', document.getElementById('obs_password').value);
+            data.append('source_name', document.getElementById('source_name').value);
+            data.append('keywords', document.getElementById('keywords').value);
+            data.append('notifications_enabled', document.getElementById('notifications_enabled').checked);
+            data.append('notification_duration', document.getElementById('notification_duration').value);
+
+            try {
+                const res = await fetch('/api/save_config', { method: 'POST', body: data });
+                const json = await res.json();
+                if (json.status === 'ok') {
+                     alert('Config Saved!');
+                     notificationDuration = parseInt(document.getElementById('notification_duration').value);
+                }
+            } catch (e) { alert('Error saving config'); }
+        }
+
+        async function connectObs() {
+            try {
+                const res = await fetch('/api/connect_obs');
+                const json = await res.json();
+                alert(json.message);
+                pollStatus(); 
+            } catch (e) { alert('Error connecting to OBS'); }
+        }
+
+        async function toggleMonitoring() {
+            const data = new FormData();
+            data.append('username', document.getElementById('username').value);
+            data.append('obs_password', document.getElementById('obs_password').value);
+            data.append('source_name', document.getElementById('source_name').value);
+            data.append('keywords', document.getElementById('keywords').value);
+            data.append('notifications_enabled', document.getElementById('notifications_enabled').checked);
+            data.append('notification_duration', document.getElementById('notification_duration').value);
+
+            try {
+                const res = await fetch('/api/toggle_monitoring', { method: 'POST', body: data });
+                const json = await res.json();
+                if (json.status === 'ok') {
+                    isMonitoring = json.is_monitoring;
+                    updateUI();
+                    notificationDuration = parseInt(document.getElementById('notification_duration').value);
+                } else {
+                    alert(json.message);
+                }
+            } catch (e) { alert('Error toggling monitor'); }
+        }
+
+        function showToast(user, message, keyword) {
+            if (toastTimeout) clearTimeout(toastTimeout);
+
+            const container = document.getElementById('toast-container');
+            const toast = document.getElementById('toast');
+            const progress = document.getElementById('toast-progress');
+            
+            document.getElementById('toast-msg').textContent = `"${message}"`;
+            document.getElementById('toast-user').textContent = `@${user} | Trigger: ${keyword}`;
+            
+            // Reset State
+            container.classList.remove('opacity-0');
+            toast.classList.remove('scale-90');
+            toast.classList.add('scale-100');
+            
+            // Animate Progress
+            progress.style.transition = 'none';
+            progress.style.transform = 'scaleX(1)';
+            
+            // Force Reflow
+            void progress.offsetWidth;
+            
+            progress.style.transition = `transform ${notificationDuration}s linear`;
+            progress.style.transform = 'scaleX(0)';
+            
+            toastTimeout = setTimeout(() => {
+                closeToast();
+            }, notificationDuration * 1000);
+        }
+
+        function closeToast() {
+             const container = document.getElementById('toast-container');
+             const toast = document.getElementById('toast');
+             container.classList.add('opacity-0');
+             toast.classList.remove('scale-100');
+             toast.classList.add('scale-90');
+             if (toastTimeout) clearTimeout(toastTimeout);
+        }
+
+
+        async function pollStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                
+                isMonitoring = data.is_monitoring;
+                obsConnected = data.obs_connected;
+                updateUI();
+
+                // Update Logs
+                const logContainer = document.getElementById('log-container');
+                logContainer.innerHTML = ''; // Simple refresh, can be optimized
+                data.logs.forEach(log => {
+                    const div = document.createElement('div');
+                    div.textContent = log.message;
+                    if (log.tag === 'error') div.className = 'text-red-500 mb-1';
+                    else if (log.tag === 'success') div.className = 'text-green-400 mb-1';
+                    else if (log.tag === 'trigger') div.className = 'text-yellow-400 font-bold mb-1';
+                    else div.className = 'text-gray-400 mb-1';
+                    logContainer.appendChild(div);
+                });
+                logContainer.scrollTop = logContainer.scrollHeight;
+
+                // Show Notifications
+                data.notifications.forEach(n => {
+                    showToast(n.user, n.message, n.keyword);
+                });
+
+            } catch (e) { console.error(e); }
+        }
+
+        setInterval(pollStatus, 1000);
+    </script>
+</body>
+</html>
