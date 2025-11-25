@@ -1,7 +1,9 @@
 from django.shortcuts import render
-from django.http import JsonResponse
+from django.http import JsonResponse, FileResponse, Http404
 from django.views.decorators.csrf import csrf_exempt
 from .service import MonitorService
+import os
+from datetime import datetime
 
 def index(request):
     service = MonitorService.get_instance()
@@ -16,6 +18,39 @@ def index(request):
         "obs_connected": service.obs_client is not None
     }
     return render(request, 'monitor/index.html', context)
+
+def replays(request):
+    video_dir = os.path.expanduser("~\\Videos")
+    videos = []
+    if os.path.exists(video_dir):
+        # List only video files, sort by creation time desc
+        for f in os.listdir(video_dir):
+            if f.lower().endswith(('.mp4', '.mkv', '.mov', '.avi')):
+                path = os.path.join(video_dir, f)
+                stat = os.stat(path)
+                videos.append({
+                    'name': f,
+                    'size': f"{stat.st_size / (1024*1024):.1f} MB",
+                    'date': datetime.fromtimestamp(stat.st_ctime),
+                    'path': path
+                })
+    
+    # Sort by date desc
+    videos.sort(key=lambda x: x['date'], reverse=True)
+    
+    return render(request, 'monitor/replays.html', {'videos': videos})
+
+def serve_video(request, filename):
+    video_dir = os.path.expanduser("~\\Videos")
+    path = os.path.join(video_dir, filename)
+    
+    # Security check to prevent path traversal
+    if not os.path.abspath(path).startswith(os.path.abspath(video_dir)):
+         raise Http404("Invalid file path")
+         
+    if os.path.exists(path):
+        return FileResponse(open(path, 'rb'))
+    raise Http404("Video not found")
 
 @csrf_exempt
 def save_config(request):

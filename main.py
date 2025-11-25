@@ -24,6 +24,7 @@ class TikTokOBSApp:
         
         # State Variables
         self.obs_client = None
+        self.obs_events = None
         self.tiktok_client = None
         self.is_monitoring = False
         self.log_file_path = ""
@@ -31,6 +32,7 @@ class TikTokOBSApp:
         self.triggers_list = []
         self.current_loop = None
         self.client_thread = None
+        self.last_trigger = None
         
         # Notification State
         self.notification_queue = deque()
@@ -190,8 +192,21 @@ class TikTokOBSApp:
 
         def _run_obs_setup():
             self.log("Connecting to OBS...", "info")
+            
+            # Cleanup existing connection if any
+            if self.obs_events:
+                try:
+                    self.obs_events.disconnect()
+                except:
+                    pass
+
             try:
                 self.obs_client = obs.ReqClient(host="localhost", port=4455, password=password)
+                
+                # Setup Events
+                self.obs_events = obs.EventClient(host="localhost", port=4455, password=password)
+                self.obs_events.callback.register(self.on_replay_saved)
+                
                 self.log("✅ Connected to OBS WebSocket!", "success")
                 try:
                     status = self.obs_client.get_replay_buffer_status()
@@ -205,7 +220,64 @@ class TikTokOBSApp:
             except Exception as e:
                 self.log(f"❌ OBS Connection Failed: {e}", "error")
                 self.obs_client = None
+                self.obs_events = None
         threading.Thread(target=_run_obs_setup, daemon=True).start()
+
+    def on_replay_saved(self, event):
+        """Handle ReplayBufferSaved event to rename the file"""
+        try:
+            # Extract path from event (handle snake_case or camelCase)
+            saved_path = getattr(event, "saved_replay_path", None)
+            if not saved_path:
+                saved_path = getattr(event, "savedReplayPath", None)
+            
+            if not saved_path:
+                self.log("⚠️ Replay saved, but path missing in event data.", "error")
+                return
+
+            if not self.last_trigger:
+                self.log(f"ℹ️ Replay saved to {saved_path} (No trigger info)", "info")
+                return
+
+            # Get Trigger Info
+            user = self.last_trigger.get("user", "unknown")
+            trigger = self.last_trigger.get("trigger", "unknown")
+            
+            # Sanitize filenames
+            invalid_chars = '<>:"/\\|?*'
+            for char in invalid_chars:
+                user = user.replace(char, "_")
+                trigger = trigger.replace(char, "_")
+
+            # Date Format: GMT+8, Non-military (12h)
+            gmt8 = timezone(timedelta(hours=8))
+            date_str = datetime.now(gmt8).strftime("%Y-%m-%d_%I-%M-%S_%p")
+            
+            # Construct new filename: username_triggerword_date
+            new_filename = f"{user}_{trigger}_{date_str}"
+            
+            # Get directory and extension
+            directory = os.path.dirname(saved_path)
+            extension = os.path.splitext(saved_path)[1]
+            
+            new_path = os.path.join(directory, f"{new_filename}{extension}")
+            
+            # Rename
+            # Retry logic in case OBS is still holding the file
+            max_retries = 5
+            for i in range(max_retries):
+                try:
+                    os.rename(saved_path, new_path)
+                    self.log(f"✅ Replay renamed to: {new_filename}{extension}", "success")
+                    break
+                except OSError as e:
+                    if i == max_retries - 1:
+                        self.log(f"❌ Failed to rename replay: {e}", "error")
+                    else:
+                        time.sleep(0.5)
+
+        except Exception as e:
+            self.log(f"❌ Error processing replay save: {e}", "error")
 
     # === NOTIFICATION SYSTEM ===
     def trigger_notification(self, user, message, keyword):
@@ -403,6 +475,12 @@ class TikTokOBSApp:
             if matched_keyword:
                 self.log(f"📸 TRIGGER: {user} says '{event.comment}'", "trigger")
                 
+                # Store Trigger Info for Renaming
+                self.last_trigger = {
+                    "user": user,
+                    "trigger": matched_keyword
+                }
+
                 # Notification
                 self.trigger_notification(user, event.comment, matched_keyword)
 
