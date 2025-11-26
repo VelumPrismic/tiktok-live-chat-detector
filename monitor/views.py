@@ -1,9 +1,15 @@
 from django.shortcuts import render
 from django.http import JsonResponse, FileResponse, Http404
 from django.views.decorators.csrf import csrf_exempt
+from django.core.exceptions import SuspiciousFileOperation
 from .service import MonitorService
+from .utils import get_video_directory
 import os
+import logging
 from datetime import datetime
+from pathlib import Path
+
+logger = logging.getLogger('monitor')
 
 def index(request):
     service = MonitorService.get_instance()
@@ -20,37 +26,74 @@ def index(request):
     return render(request, 'monitor/index.html', context)
 
 def replays(request):
-    video_dir = os.path.expanduser("~\\Videos")
-    videos = []
-    if os.path.exists(video_dir):
-        # List only video files, sort by creation time desc
-        for f in os.listdir(video_dir):
-            if f.lower().endswith(('.mp4', '.mkv', '.mov', '.avi')):
-                path = os.path.join(video_dir, f)
-                stat = os.stat(path)
-                videos.append({
-                    'name': f,
-                    'size': f"{stat.st_size / (1024*1024):.1f} MB",
-                    'date': datetime.fromtimestamp(stat.st_ctime),
-                    'path': path
-                })
-    
-    # Sort by date desc
-    videos.sort(key=lambda x: x['date'], reverse=True)
+    """Display list of replay videos from the video directory"""
+    try:
+        video_dir = get_video_directory()
+        videos = []
+        
+        if video_dir.exists():
+            # List only video files, sort by creation time desc
+            for f in video_dir.iterdir():
+                if f.is_file() and f.suffix.lower() in ('.mp4', '.mkv', '.mov', '.avi'):
+                    try:
+                        stat = f.stat()
+                        videos.append({
+                            'name': f.name,
+                            'size': f"{stat.st_size / (1024*1024):.1f} MB",
+                            'date': datetime.fromtimestamp(stat.st_ctime),
+                            'path': str(f)
+                        })
+                    except Exception as e:
+                        logger.warning(f"Error reading file {f}: {e}")
+                        continue
+        
+        # Sort by date desc
+        videos.sort(key=lambda x: x['date'], reverse=True)
+        
+    except Exception as e:
+        logger.error(f"Error listing replay videos: {e}", exc_info=True)
+        videos = []
     
     return render(request, 'monitor/replays.html', {'videos': videos})
 
 def serve_video(request, filename):
-    video_dir = os.path.expanduser("~\\Videos")
-    path = os.path.join(video_dir, filename)
-    
-    # Security check to prevent path traversal
-    if not os.path.abspath(path).startswith(os.path.abspath(video_dir)):
-         raise Http404("Invalid file path")
-         
-    if os.path.exists(path):
-        return FileResponse(open(path, 'rb'))
-    raise Http404("Video not found")
+    """Serve a video file from the video directory"""
+    try:
+        video_dir = get_video_directory()
+        
+        # Sanitize filename - remove any path components
+        filename = os.path.basename(filename)
+        
+        # Construct full path
+        file_path = video_dir / filename
+        
+        # Security check - ensure file is within video directory
+        try:
+            # Resolve to absolute paths and check
+            real_file = file_path.resolve()
+            real_dir = video_dir.resolve()
+            
+            if not str(real_file).startswith(str(real_dir)):
+                logger.warning(f"Path traversal attempt: {filename}")
+                raise SuspiciousFileOperation("Invalid file path")
+        except Exception as e:
+            logger.error(f"Security check failed for {filename}: {e}")
+            raise Http404("Invalid file path")
+        
+        # Check if file exists
+        if not file_path.exists() or not file_path.is_file():
+            raise Http404("Video not found")
+        
+        # Return file response
+        response = FileResponse(open(file_path, 'rb'))
+        response['Content-Type'] = 'video/mp4'
+        return response
+        
+    except Http404:
+        raise
+    except Exception as e:
+        logger.error(f"Error serving video {filename}: {e}", exc_info=True)
+        raise Http404("Video not found")
 
 @csrf_exempt
 def save_config(request):
