@@ -3,17 +3,21 @@ import asyncio
 import json
 import os
 import time
+import logging
 from datetime import datetime, timezone, timedelta
 from collections import deque
 import obsws_python as obs
 from TikTokLive import TikTokLiveClient
 from TikTokLive.events import ConnectEvent, CommentEvent
 from tiktok_live_patch import apply_patch
+from .utils import get_config_file_path, sanitize_filename
+
+logger = logging.getLogger('monitor')
 
 # Apply Patch
 apply_patch()
 
-CONFIG_FILE = "tiktok_obs_config.json"
+CONFIG_FILE = str(get_config_file_path())
 
 class MonitorService:
     _instance = None
@@ -73,15 +77,27 @@ class MonitorService:
         return any(self.is_stream_active(u) for u in self.usernames)
 
     def log(self, message, tag="info", source_stream=None):
+        """Log a message to both in-memory queue and logging system"""
         timestamp = datetime.now().strftime("%H:%M:%S")
         full_msg = f"[{timestamp}] {message}" if not source_stream else f"[{timestamp}] [{source_stream}] {message}"
+        
+        # Add to in-memory queue for UI
         self.logs.append({
             "message": message, 
             "tag": tag, 
             "timestamp": timestamp, 
             "source_stream": source_stream
         })
-        # print(full_msg)
+        
+        # Log to file system based on tag
+        if tag == "error":
+            logger.error(full_msg)
+        elif tag == "success":
+            logger.info(full_msg)
+        elif tag == "trigger":
+            logger.warning(full_msg)  # Use warning level for triggers so they stand out
+        else:
+            logger.info(full_msg)
 
     def _load_config(self):
         if os.path.exists(CONFIG_FILE):
@@ -99,8 +115,11 @@ class MonitorService:
                     self.keywords = data.get("keywords", "")
                     self.notifications_enabled = data.get("notifications_enabled", True)
                     self.notification_duration = data.get("notification_duration", 5)
+                    
+                    logger.info(f"Configuration loaded from {CONFIG_FILE}")
             except Exception as e:
                 self.log(f"Failed to load config: {e}", "error")
+                logger.error(f"Failed to load config: {e}", exc_info=True)
 
     def save_config(self, usernames, obs_password, source_name, keywords, notifications_enabled=True, notification_duration=5):
         if isinstance(usernames, str):
@@ -125,8 +144,10 @@ class MonitorService:
         try:
             with open(CONFIG_FILE, "w") as f:
                 json.dump(data, f)
+            logger.info(f"Configuration saved to {CONFIG_FILE}")
         except Exception as e:
             self.log(f"Failed to save config: {e}", "error")
+            logger.error(f"Failed to save config: {e}", exc_info=True)
 
     def connect_obs(self):
         if not self.obs_password:
@@ -192,11 +213,9 @@ class MonitorService:
             user = self.last_trigger.get("user", "unknown")
             trigger = self.last_trigger.get("trigger", "unknown")
             
-            # Sanitize filenames
-            invalid_chars = '<>:"/\\|?*'
-            for char in invalid_chars:
-                user = user.replace(char, "_")
-                trigger = trigger.replace(char, "_")
+            # Sanitize filenames using utility function
+            user = sanitize_filename(user)
+            trigger = sanitize_filename(trigger)
 
             # Date Format: GMT+8, Non-military (12h)
             gmt8 = timezone(timedelta(hours=8))
@@ -287,8 +306,8 @@ class MonitorService:
 
     async def _on_comment(self, event, source_stream):
         msg = event.comment
-        # Debug print to console to verify stream flow
-        print(f"[DEBUG] Comment from {getattr(event.user, 'unique_id', 'unknown')}: {msg}")
+        # Log comment for debugging
+        logger.debug(f"Comment from {getattr(event.user, 'unique_id', 'unknown')}: {msg}")
         
         # Triggers
         trigger_list = [k.strip().lower() for k in self.keywords.split(",") if k.strip()]
