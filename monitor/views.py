@@ -8,7 +8,7 @@ from datetime import datetime
 def index(request):
     service = MonitorService.get_instance()
     context = {
-        "username": service.username,
+        "usernames": service.usernames,
         "obs_password": service.obs_password,
         "source_name": service.source_name,
         "keywords": service.keywords,
@@ -56,7 +56,21 @@ def serve_video(request, filename):
 def save_config(request):
     if request.method == "POST":
         service = MonitorService.get_instance()
-        username = request.POST.get("username")
+        usernames_raw = request.POST.get("username")
+        
+        if not usernames_raw:
+            usernames = []
+        elif "," in usernames_raw:
+            usernames = [u.strip() for u in usernames_raw.split(",") if u.strip()]
+        else:
+             # Check if it's coming as a JSON string or just a string
+            usernames = [usernames_raw.strip()]
+
+        # If the frontend sends it as a JSON array string, we might need to parse it differently,
+        # but for now let's assume the frontend sends a comma-separated string for simplicity 
+        # or we adapt the frontend to send a list.
+        # Actually, better to rely on service to split if passed as string.
+        
         obs_password = request.POST.get("obs_password")
         source_name = request.POST.get("source_name")
         keywords = request.POST.get("keywords")
@@ -66,7 +80,7 @@ def save_config(request):
         except ValueError:
             notification_duration = 5
             
-        service.save_config(username, obs_password, source_name, keywords, notifications_enabled, notification_duration)
+        service.save_config(usernames_raw, obs_password, source_name, keywords, notifications_enabled, notification_duration)
         return JsonResponse({"status": "ok", "message": "Config saved"})
     return JsonResponse({"status": "error"}, status=400)
 
@@ -77,32 +91,23 @@ def connect_obs(request):
     return JsonResponse({"status": "ok" if success else "error", "message": msg})
 
 @csrf_exempt
-def toggle_monitoring(request):
+def stream_action(request):
     service = MonitorService.get_instance()
     if request.method == "POST":
-        # Save config first if provided
+        action = request.POST.get("action") # start or stop
         username = request.POST.get("username")
-        if username:
-            notifications_enabled = request.POST.get("notifications_enabled") == 'true'
-            try:
-                notification_duration = int(request.POST.get("notification_duration", 5))
-            except ValueError:
-                notification_duration = 5
-                
-            service.save_config(
-                request.POST.get("username"),
-                request.POST.get("obs_password"),
-                request.POST.get("source_name"),
-                request.POST.get("keywords"),
-                notifications_enabled,
-                notification_duration
-            )
-    
-    result = service.toggle_monitoring()
-    if isinstance(result, bool):
-        return JsonResponse({"status": "ok", "is_monitoring": result})
-    else:
-        return JsonResponse({"status": "error", "message": result[1] if isinstance(result, tuple) else "Error"})
+        
+        if not username:
+            return JsonResponse({"status": "error", "message": "Username required"})
+            
+        if action == "start":
+            service.start_stream(username)
+            return JsonResponse({"status": "ok", "message": f"Started monitoring @{username}"})
+        elif action == "stop":
+            service.stop_stream(username)
+            return JsonResponse({"status": "ok", "message": f"Stopped monitoring @{username}"})
+            
+    return JsonResponse({"status": "error", "message": "Invalid action"})
 
 def get_status(request):
     service = MonitorService.get_instance()
@@ -110,9 +115,28 @@ def get_status(request):
     while service.notification_queue:
         notifications.append(service.notification_queue.popleft())
         
+    # Support filtering logs by source stream
+    stream_filter = request.GET.get('stream')
+    logs = list(service.logs)
+    
+    if stream_filter:
+        logs = [log for log in logs if log.get('source_stream') == stream_filter]
+        
+    # Get active streams status
+    active_streams = {}
+    for user in service.usernames:
+        active_streams[user] = service.is_stream_active(user)
+        
     return JsonResponse({
-        "logs": list(service.logs),
-        "is_monitoring": service.is_monitoring,
+        "logs": logs,
+        "active_streams": active_streams, # Map of username -> bool (is_monitoring)
         "obs_connected": service.obs_client is not None,
         "notifications": notifications
     })
+
+
+@csrf_exempt
+def clear_logs(request):
+    service = MonitorService.get_instance()
+    service.logs.clear()
+    return JsonResponse({"status": "ok", "message": "Logs cleared"})
